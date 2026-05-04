@@ -1,4 +1,4 @@
-This model represents the core integration layer (DUMEHybridEngine.swift) that orchestrates all the modular components (Compression, Safety, Speculation, Manifold, Storage, Encryption) into a cohesive, production-grade system.
+1. This model represents the core integration layer (DUMEHybridEngine.swift) that orchestrates all the modular components (Compression, Safety, Speculation, Manifold, Storage, Encryption) into a cohesive, production-grade system.
 The Intended Engine Model: DUMEHybridEngine
 
 This class is the "brain" of the system. It manages the System Phase (Cold Start → Warming → Active), handles Burst Protection, executes Speculative Reconstruction, and drives Manifold Evolution.
@@ -63,6 +63,7 @@ public final class DUMEHybridEngine {
     private let crypto: (any DUMEEncryption)?
     private let compression: SparseCompression
     private let speculator: SpeculativeEngine
+    private let clock: SystemClock
     
     // MARK: - State Management
     
@@ -72,32 +73,40 @@ public final class DUMEHybridEngine {
     
     private var graph: GraphEvolution
     private var burstDetector: BurstDetector
+    private var approximateIndex = ApproximateIndex()
     
     // MARK: - Configuration Flags
     
     private let enableEvolution: Bool
     private let enableSpeculation: Bool
     private let enableBurstProtection: Bool
-    private let compressionThreshold: Float
+    let (values, indices) = try compression.compress(
+    finalVector,
+    entropy: ctx.entropy * compressionThreshold,
+    drift: ctx.drift * compressionThreshold,
+    isBurstMode: isBurst
+)
     
     // MARK: - Initialization
     
     public init(
-        metric: DUMEMetric,
-        storage: any DUMEPersistentStorage,
-        crypto: (any DUMEEncryption)? = nil,
-        compression: SparseCompression = SparseCompression(),
-        speculator: SpeculativeEngine = SpeculativeEngine(),
-        enableEvolution: Bool = true,
-        enableSpeculation: Bool = true,
-        enableBurstProtection: Bool = true,
-        compressionThreshold: Float = 0.02
-    ) {
+    metric: DUMEMetric,
+    storage: any DUMEPersistentStorage,
+    crypto: (any DUMEEncryption)? = nil,
+    compression: SparseCompression = SparseCompression(),
+    speculator: SpeculativeEngine = SpeculativeEngine(),
+    enableEvolution: Bool = true,
+    enableSpeculation: Bool = true,
+    enableBurstProtection: Bool = true,
+    compressionThreshold: Float = 0.02,
+    clock: SystemClock = RealClock()
+) {
         self.metric = metric
         self.storage = storage
         self.crypto = crypto
         self.compression = compression
         self.speculator = speculator
+        self.clock = clock
         self.enableEvolution = enableEvolution
         self.enableSpeculation = enableSpeculation
         self.enableBurstProtection = enableBurstProtection
@@ -142,11 +151,11 @@ public final class DUMEHybridEngine {
                 let velocity = zip(vector, nearest).map { $0 - $1 }
                 let result = speculator.speculate(current: nearest, velocity: velocity)
                 if result.isValid {
-                    finalVector = result.predicted
-                }
-            }
-        }
-        
+    finalVector = zip(vector, result.predicted).map {
+        let alpha = min(0.9, result.confidence)
+        return $0 * (1 - alpha) + $1 * alpha
+    }
+} 
         // 5. Compression
         let (values, indices) = try compression.compress(
             finalVector,
@@ -160,33 +169,49 @@ public final class DUMEHybridEngine {
         let secured = try crypto?.encrypt(raw) ?? raw
         
         // 7. Reconstruction (Decompression)
-        let restored = secured.withUnsafeBytes {
-            Array($0.bindMemory(to: Float.self))
-        }
-        
-        var full = [Float](repeating: 0, count: vector.count)
-        for (i, idx) in indices.enumerated() {
-            if i < restored.count {
-                full[idx] = restored[i]
-            }
-        }
-        
+        let decrypted = try crypto?.decrypt(secured) ?? secured
+
+guard decrypted.count % MemoryLayout<Float>.size == 0 else {
+    throw DUMEError.decryptionFailed("Corrupted data: misaligned byte count")
+}
+
+let restored = decrypted.withUnsafeBytes {
+    Array($0.bindMemory(to: Float.self))
+}
         // 8. Storage
-        let anchor = Anchor(id: id, vector: full, version: ingestCount)
-        try await storage.put(anchor)
+let anchor = Anchor(
+    id: id,
+    values: restored,
+    indices: indices,
+    denseCache: nil,
+    version: ingestCount,
+    timestamp: clock.now()
+)
+
+try await storage.put(anchor)
         
         // 9. Manifold Evolution (Graph Update)
         if enableEvolution && !isBurst && phase == .active {
             try graph.addNode(id: id, vector: finalVector)
             graph.pruneOldNodes()
         }
-    }
+    approximateIndex.insert(finalVector)
     
     /// Retrieves a vector by ID.
     /// - Parameter id: The unique identifier.
     /// - Returns: The reconstructed vector, or nil if not found.
     public func retrieve(id: String) async throws -> [Float]? {
-        return try await storage.get(id)?.vector
+        guard let anchor = try await storage.get(id) else { return nil }
+
+if let cached = anchor.denseCache {
+    return cached
+}
+
+return try compression.decompress(
+    values: anchor.values,
+    indices: anchor.indices,
+    originalSize: expectedVectorSize
+)
     }
     
     /// Creates a checkpoint of the current state.
@@ -223,8 +248,9 @@ public final class DUMEHybridEngine {
         var nearest: [Float]?
         var minDistance = Float.infinity
         
-        for node in allNodes {
-            let distance = metric.distance(vector, node.vector)
+        if let approx = approximateIndex.nearest(to: vector, metric: metric) {
+    return approx
+}
             if distance < minDistance {
                 minDistance = distance
                 nearest = node.vector
