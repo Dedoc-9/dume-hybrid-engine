@@ -1,0 +1,141 @@
+Sources/Core/Protocols.swift
+
+Defines the abstract contracts for Metrics, Encryption, and Storage, plus the core Error types:
+import Foundation
+
+// MARK: - Protocol Definitions
+
+/// Defines the contract for distance calculation between vectors.
+/// Implementations must be deterministic and thread-safe.
+public protocol DUMEMetric {
+    /// Calculates the distance between two vectors.
+    /// - Parameters:
+    ///   - a: First vector.
+    ///   - b: Second vector.
+    /// - Returns: A non-negative float representing the distance.
+    func distance(_ a: [Float], _ b: [Float]) -> Float
+}
+
+/// Defines the contract for encryption and decryption.
+/// Implementations must handle data integrity and security.
+public protocol DUMEEncryption {
+    /// Encrypts raw data.
+    /// - Parameter data: The plaintext data.
+    /// - Returns: The encrypted data.
+    /// - Throws: DUMEError.encryptionFailed if encryption fails.
+    func encrypt(_ data: Data) throws -> Data
+    
+    /// Decrypts raw data.
+    /// - Parameter data: The encrypted data.
+    /// - Returns: The decrypted plaintext data.
+    /// - Throws: DUMEError.decryptionFailed if decryption fails.
+    func decrypt(_ data: Data) throws -> Data
+}
+
+/// Defines the contract for persistent storage.
+/// Must be an Actor to ensure thread-safe concurrent access.
+public protocol DUMEPersistentStorage: Actor {
+    /// Stores an anchor in the storage backend.
+    /// - Parameter anchor: The anchor to store.
+    /// - Throws: DUMEError.storageError if storage fails.
+    func put(_ anchor: Anchor) async throws
+    
+    /// Retrieves an anchor by its ID.
+    /// - Parameter id: The unique identifier.
+    /// - Returns: The anchor if found, nil otherwise.
+    func get(_ id: String) async throws -> Anchor?
+    
+    /// Creates a snapshot of the current state.
+    /// - Throws: DUMEError.storageError if checkpoint fails.
+    func checkpoint() async throws
+    
+    /// Restores state from a previous snapshot.
+    /// - Throws: DUMEError.storageError if restore fails.
+    func restore() async throws
+    
+    /// Retrieves all stored anchors.
+    /// - Returns: An array of all anchors.
+    func getAllAnchors() async throws -> [Anchor]
+}
+
+// MARK: - Core Types
+
+/// Contextual metadata passed during ingestion to guide compression and speculation.
+public struct CompressionContext: Equatable {
+    /// Entropy level of the current data stream [0.0, 1.0].
+    public let entropy: Float
+    
+    /// Drift level indicating distribution shift [0.0, 1.0].
+    public let drift: Float
+    
+    /// Initializes a new context with validation.
+    /// - Throws: DUMEError.invalidCompressionContext if values are out of bounds.
+    public init(entropy: Float, drift: Float) throws {
+        guard entropy >= 0 && entropy <= 1 else {
+            throw DUMEError.invalidCompressionContext("entropy must be in [0, 1]")
+        }
+        guard drift >= 0 && drift <= 1 else {
+            throw DUMEError.invalidCompressionContext("drift must be in [0, 1]")
+        }
+        self.entropy = entropy
+        self.drift = drift
+    }
+}
+
+/// Represents a stored vector anchor with versioning.
+public struct Anchor: Codable, Equatable {
+    /// Unique identifier for the anchor.
+    public let id: String
+    
+    /// The vector data (potentially compressed/reconstructed).
+    public let vector: [Float]
+    
+    /// Version number for conflict resolution.
+    public let version: Int
+    
+    /// Timestamp of creation/last update.
+    public let timestamp: Double
+    
+    public init(id: String, vector: [Float], version: Int, timestamp: Double = Date().timeIntervalSince1970) {
+        self.id = id
+        self.vector = vector
+        self.version = version
+        self.timestamp = timestamp
+    }
+}
+
+// MARK: - Error Types
+
+/// Centralized error handling for the DUME framework.
+public enum DUMEError: LocalizedError {
+    case invalidVector(String)
+    case invalidCompressionContext(String)
+    case compressionFailed(String)
+    case encryptionFailed(String)
+    case decryptionFailed(String)
+    case storageError(String)
+    case versionConflict(String)
+    case invalidMetric(String)
+    
+    public var errorDescription: String? {
+        switch self {
+        case .invalidVector(let msg): return "Invalid vector: \(msg)"
+        case .invalidCompressionContext(let msg): return "Invalid compression context: \(msg)"
+        case .compressionFailed(let msg): return "Compression failed: \(msg)"
+        case .encryptionFailed(let msg): return "Encryption failed: \(msg)"
+        case .decryptionFailed(let msg): return "Decryption failed: \(msg)"
+        case .storageError(let msg): return "Storage error: \(msg)"
+        case .versionConflict(let msg): return "Version conflict: \(msg)"
+        case .invalidMetric(let msg): return "Invalid metric: \(msg)"
+        }
+    }
+}
+
+// MARK: - System Phase
+
+/// Represents the current operational phase of the engine.
+public enum SystemPhase: Equatable {
+    case coldStart   // Initial bootstrapping, no speculation/graph
+    case warming     // Partial optimization enabled
+    case active      // Full manifold evolution and speculation
+}
