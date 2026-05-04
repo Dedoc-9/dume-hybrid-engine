@@ -1,0 +1,77 @@
+Section 15: Minimal CI Workflow for Unit Tests and Build
+
+Below is a practical GitHub Actions workflow to automatically run unit tests and build the DUME Engine across common environments. It demonstrates a minimal yet effective setup that you can drop into your repository as .github/workflows/ci.yml and adapt as needed.
+15.1 Workflow: ci.yml
+name: CI - Swift Unit Tests and Build
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  swift-linux:
+    name: Swift - Linux (Ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Swift toolchain
+        uses: tráfego/swift-toolchain@v1
+        with:
+          swift-version: '5.8'  # adjust to your required Swift version
+
+      - name: Cache SwiftPM dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.build
+            .build
+            .package
+          key: ${{ runner.os }}-swift-${{ hashFiles('Package.swift', '**/*. Package.resolved') }}
+
+      - name: Resolve dependencies
+        run: swift package resolve
+
+      - name: Build
+        run: swift build -c release
+
+      - name: Run tests
+        run: swift test -c release
+
+  swift-macos:
+    name: Swift - macOS
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve dependencies
+        run: swift package resolve
+
+      - name: Build
+        run: swift build -c release
+
+      - name: Run tests
+        run: swift test -c release
+
+15.2 Notes and best practices
+    Swift toolchain:
+        The Linux job uses a Swift toolchain installer action to ensure a specific Swift version. If your repository relies on a particular Swift version, pin it accordingly (for example, 5.8 or newer). On macOS, the native toolchain is typically sufficient.
+    Dependency management:
+        This project uses Swift Package Manager (SwiftPM). If you use a different system (CocoaPods, Carthage, etc.), adjust the dependency resolution steps accordingly.
+    Caching:
+        The Linux job caches build artifacts and dependencies to speed up subsequent runs. If your project structure changes, update the cache paths.
+    Testing scope:
+        The workflow runs unit tests with -c release to mirror a release-compiled test environment. If your tests rely on debug builds, adjust the configuration accordingly.
+    Matrix and coverage:
+        For broader coverage, you can extend the workflow with a matrix strategy to test multiple Swift versions or platforms. You can also add code coverage collection and uploading if you have a suitable service.
+    Secrets and sensitive data:
+        Keep any credentials out of the workflow. If you need API keys or tokens for tests, use GitHub Secrets and reference them in the workflow.
+
+15.3 Quick extension ideas
+    Add a linting step with swiftlint (if your project uses SwiftLint).
+    Add a documentation build step to ensure docs compile or stay in sync.
+    Add a separate job for performance benchmarks to track regressions over time.
