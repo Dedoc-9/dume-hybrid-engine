@@ -1,4 +1,4 @@
-Here is the implementation for Section 5: The Safety Module.
+6: The Safety Module.
 
 This module implements the Burst Detection mechanism. It monitors entropy fluctuations to detect sudden data spikes ("bursts"). When a burst is detected, the engine automatically disables compression and speculation to ensure zero data loss and maximum fidelity during unstable periods.
 
@@ -39,8 +39,11 @@ public struct BurstDetector {
     public var isBurstMode: Bool {
         guard history.count >= 2 else { return false }
         
-        let delta = abs(history.last! - history[history.count - 2])
-        return delta > threshold
+        let recent = history.suffix(3)
+let deltas = zip(recent.dropFirst(), recent).map { abs($0 - $1) }
+let avgDelta = deltas.reduce(0, +) / Float(deltas.count)
+
+return avgDelta > threshold
     }
     
     /// Calculates the current trend of entropy (positive = rising, negative = falling).
