@@ -1,4 +1,4 @@
-Sources/Core/Protocols.swift
+3. Sources/Core/Protocols.swift
 
 Defines the abstract contracts for Metrics, Encryption, and Storage, plus the core Error types:
 import Foundation
@@ -88,7 +88,9 @@ public struct Anchor: Codable, Equatable {
     public let id: String
     
     /// The vector data (potentially compressed/reconstructed).
-    public let vector: [Float]
+    public let values: [Float]
+    public let indices: [Int]
+    public var denseCache: [Float]?
     
     /// Version number for conflict resolution.
     public let version: Int
@@ -96,7 +98,7 @@ public struct Anchor: Codable, Equatable {
     /// Timestamp of creation/last update.
     public let timestamp: Double
     
-    public init(id: String, vector: [Float], version: Int, timestamp: Double = Date().timeIntervalSince1970) {
+    public init(id: String, vector: [Float], version: Int, timestamp: Double) {
         self.id = id
         self.vector = vector
         self.version = version
