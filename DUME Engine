@@ -74,19 +74,15 @@ public final class DUMEHybridEngine {
     private var graph: GraphEvolution
     private var burstDetector: BurstDetector
     private var approximateIndex = ApproximateIndex()
+    private let compressionThreshold: Float
     
     // MARK: - Configuration Flags
-    
-    private let enableEvolution: Bool
-    private let enableSpeculation: Bool
-    private let enableBurstProtection: Bool
-    let (values, indices) = try compression.compress(
-    finalVector,
-    entropy: ctx.entropy * compressionThreshold,
-    drift: ctx.drift * compressionThreshold,
-    isBurstMode: isBurst
-)
-    
+
+private let enableEvolution: Bool
+private let enableSpeculation: Bool
+private let enableBurstProtection: Bool
+private let compressionThreshold: Float
+ )   
     // MARK: - Initialization
     
     public init(
@@ -166,26 +162,23 @@ public final class DUMEHybridEngine {
         
         // 6. Encryption (Optional)
         let raw = Data(bytes: values, count: values.count * MemoryLayout<Float>.size)
-        let secured = try crypto?.encrypt(raw) ?? raw
+        let securedData = try crypto?.encrypt(raw) ?? rawData
+
+// NOTE: no immediate reconstruction here
+let restored = values
         
         // 7. Reconstruction (Decompression)
-        let decrypted = try crypto?.decrypt(secured) ?? secured
+        let restored = values
 
-guard decrypted.count % MemoryLayout<Float>.size == 0 else {
-    throw DUMEError.decryptionFailed("Corrupted data: misaligned byte count")
-}
-
-let restored = decrypted.withUnsafeBytes {
-    Array($0.bindMemory(to: Float.self))
-}
         // 8. Storage
 let anchor = Anchor(
     id: id,
-    values: restored,
+    values: values,
     indices: indices,
     denseCache: nil,
     version: ingestCount,
-    timestamp: clock.now()
+    timestamp: clock.now(),
+    originalSize: vector.count
 )
 
 try await storage.put(anchor)
@@ -195,7 +188,9 @@ try await storage.put(anchor)
             try graph.addNode(id: id, vector: finalVector)
             graph.pruneOldNodes()
         }
-    approximateIndex.insert(finalVector)
+
+// 10. Indexing (must be last)
+approximateIndex.insert(finalVector)
     
     /// Retrieves a vector by ID.
     /// - Parameter id: The unique identifier.
@@ -210,7 +205,7 @@ if let cached = anchor.denseCache {
 return try compression.decompress(
     values: anchor.values,
     indices: anchor.indices,
-    originalSize: expectedVectorSize
+    originalSize: anchor.originalSize
 )
     }
     
