@@ -1,0 +1,89 @@
+File 2: Sources/Core/Types.swift
+
+Implements the concrete metric algorithms and data structures used by the engine: 
+import Foundation
+
+/// A hybrid metric implementation supporting both Cosine and Euclidean distances.
+public struct HybridMetric: DUMEMetric {
+    private let useCosine: Bool
+    
+    public init(useCosine: Bool = true) {
+        self.useCosine = useCosine
+    }
+    
+    public func distance(_ a: [Float], _ b: [Float]) -> Float {
+        guard a.count == b.count && !a.isEmpty else { return Float.infinity }
+        
+        if useCosine {
+            return cosineDistance(a, b)
+        } else {
+            return euclideanDistance(a, b)
+        }
+    }
+    
+    private func cosineDistance(_ a: [Float], _ b: [Float]) -> Float {
+        let normA = sqrt(a.reduce(0) { $0 + $1 * $1 })
+        let normB = sqrt(b.reduce(0) { $0 + $1 * $1 })
+        
+        guard normA > 0, normB > 0 else { return 1.0 }
+        
+        var dot: Float = 0
+        for i in 0..<a.count {
+            dot += a[i] * b[i]
+        }
+        
+        let cosSim = dot / (normA * normB)
+        return max(0, min(1, 1.0 - cosSim))
+    }
+    
+    private func euclideanDistance(_ a: [Float], _ b: [Float]) -> Float {
+        var sumSq: Float = 0
+        for i in 0..<a.count {
+            let diff = a[i] - b[i]
+            sumSq += diff * diff
+        }
+        return sqrt(sumSq)
+    }
+}
+
+/// Represents a node in the manifold graph.
+public struct ManifoldNode: Equatable {
+    public let id: String
+    public var vector: [Float]
+    public var neighbors: Set<String>
+    public var utility: Float
+    public var lastAccess: Date
+    
+    public init(id: String, vector: [Float]) {
+        self.id = id
+        self.vector = vector
+        self.neighbors = []
+        self.utility = 1.0
+        self.lastAccess = Date()
+    }
+    
+    /// Updates access time and slightly increases utility.
+    public mutating func touch() {
+        lastAccess = Date()
+        utility = min(1.0, utility * 1.05)
+    }
+    
+    /// Decays utility based on age.
+    public mutating func decayUtility(age: TimeInterval) {
+        let decayFactor = max(0.1, 1.0 - Float(age / 3600.0))
+        utility *= decayFactor
+    }
+}
+
+/// Result of a speculative prediction.
+public struct SpeculationResult: Equatable {
+    public let predicted: [Float]
+    public let confidence: Float
+    public let isValid: Bool
+    
+    public init(predicted: [Float], confidence: Float, isValid: Bool) {
+        self.predicted = predicted
+        self.confidence = min(1.0, max(0.0, confidence))
+        self.isValid = isValid && confidence >= 0.5
+    }
+}
