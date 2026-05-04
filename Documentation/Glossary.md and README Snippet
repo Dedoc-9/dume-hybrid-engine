@@ -1,0 +1,108 @@
+Section 14: Documentation/Glossary.md and README Snippet
+
+Below are two cohesive artifacts you can drop into your repository:
+    A concise glossary to accompany the project’s technical details
+    A practical README snippet that demonstrates the project purpose, setup, and usage
+
+These pieces are designed to be lightweight, developer-friendly, and easy to extend as the project evolves.
+14.1 Glossary: Documentation/Glossary.md
+Core Concepts:
+    Engine: The central component that orchestrates data ingestion, compression, optional encryption, storage, and retrieval within the DUME pipeline.
+    GraphEvolution: A lightweight k-nearest neighbor graph that maintains nodes (latent vectors) and neighbor links used for rapid similarity-based lookups and structural organization.
+    GraphSimilarity: A protocol that defines a method to compute similarity or fitness between two latent vectors.
+    CosineSimilarity: A concrete implementation of GraphSimilarity that uses cosine similarity.
+    EuclideanProximity: A concrete implementation of GraphSimilarity that converts Euclidean distance into a similarity-like score.
+    GraphNode: A node in the GraphEvolution graph, containing an identifier, its latent vector, and a list of neighboring links.
+    NeighborLink: A lightweight reference to a neighbor node along with the computed similarity score.
+    DUMEEncryption: Abstraction for encryption strategy used by the Engine, such as AES-GCM or a No-Op variant.
+    CheckpointStore: A storage interface responsible for persisting engine state (snapshots) to allow recovery.
+    StorageBackend: An enum describing where engine data is physically stored (in memory, disk, etc).
+    CompressionContext: Abstraction for the compression/decompression pipeline used to reduce latent vectors for storage and transmission.
+    CompressionError: Custom error types related to compression operations.
+    SecurityConfig / SafetyConfig: Configuration knobs for behavior related to burst detection, entropy tracking, and related safety policies.
+    DUMEHybridFactory: Factory that wires together engine components into a usable EngineProtocol instance.
+    EngineProtocol: Protocol describing the minimal interface for an engine (ingest, retrieve, shutdown).
+    Delta Encoding / Quantization (optional): Potential techniques used in compression pipelines to reduce data size.
+    Latency / Throughput: Performance metrics used to reason about ingestion and retrieval efficiency.
+
+Design and Architecture:
+    Thread Safety: Elements like GraphEvolution use a minimal locking strategy (or a concurrent queue) to coordinate access to shared state.
+    Extensibility: The system is designed with pluggable components (e.g., GraphSimilarity strategies, encryption, storage backends) to simplify experimentation.
+    Testing Strategy: Tests are structured to validate core math, graph logic, and compression round-trips, ensuring deterministic behavior for critical paths.
+
+Common Workflows:
+    Insertion: A new latent vector is inserted into the GraphEvolution, which computes similarities to existing nodes and connects to up to k nearest neighbors.
+    Mutual Linking: Neighbor relationships are updated to maintain a bidirectional graph where feasible.
+    Pruning / Maintenance: Periodic maintenance reduces degenerate links and enforces degree bounds to keep the graph efficient.
+    Ingestion Pipeline: Data flows through compression, optional encryption, storage, and indexing into the graph structure.
+    Retrieval: A query retrieves latent vectors from storage and/or through the graph’s neighbor traversal for similarity-based results.
+
+Quick Reference:
+    Protocols: GraphSimilarity, CompressionContext, EngineProtocol
+    Implementations: CosineSimilarity, EuclideanProximity, MockPassThroughCompression
+    Key Types: GraphEvolution, GraphNode, NeighborLink, DUMEEncryption, CheckpointStore
+    Factory: DUMEHybridFactory
+
+14.2 README Snippet: README.md (example)
+# DUME Engine
+
+The DUME Engine is a lightweight, pluggable data processing pipeline designed for streaming ingestion of latent vectors. It provides a compact k-NN graph to organize vectors, optional encryption for secure storage, and a pluggable compression layer to minimize storage footprint.
+
+## Highlights
+- Lightweight, testable graph management via GraphEvolution
+- Pluggable similarity metrics (Cosine, Euclidean proximity)
+- Optional encryption via DUMEEncryption (AES-GCM, No-Op)
+- Extensible storage backends (in memory, disk)
+- Checkpointing support for state persistence
+
+## Architecture Overview
+- Ingests latent vectors and builds a small k-NN graph around each new node
+- Maintains up to k neighbor links per node
+- Uses a pluggable CompressionContext to compress vectors before storage
+- Optionally encrypts compressed data before persisting
+- Stores data via a StorageBackend (inMemory or disk-based)
+- Checkpoints engine state through a CheckpointStore
+
+## Setup and Quick Start:
+1) Install dependencies (SwiftPM or your preferred build system)
+2) Create a DUME engine using the factory
+
+Example (Swift):
+
+```swift
+import Foundation
+
+// Configure encryption (optional)
+let keyData = Data((0..<32).map { _ in UInt8.random(in: 0...255) })
+let aesKey = SymmetricKey(data: keyData)
+let aesEncryption = AESGCMEncryption(key: aesKey)
+
+let engine = DUMEHybridFactory.makeDefaultEngine(
+    encryptionConfig: DUMEEncryptionConfig(useEncryption: true, encryption: aesEncryption),
+    graphConfig: GraphConfig(k: 8, similarity: CosineSimilarity()),
+    storage: .disk(url: URL(fileURLWithPath: "/tmp/dume")),
+    checkpointStore: nil,
+    safetyConfig: SafetyConfig(burstThreshold: 0.75, entropyWindow: 20)
+)
+
+engine.ingest([0.1, 0.2, 0.3], metadata: ["source": "demo"])
+
+Testing
+    Unit tests cover core metrics symmetry, graph evolution behavior, and compression round-trips.
+    Tests are located under Tests/UnitTests:
+        CoreTests.swift
+        CompressionTests.swift
+        (and more as your project grows)
+
+Extending
+    Swap in alternative GraphSimilarity strategies
+    Swap encryption with different schemes
+    Replace storage backend with a real database
+    Extend the GraphEvolution pruning strategy or support for dynamic k
+
+Contributing
+    Follow the project style and testing guidelines
+    Add tests for any new feature or algorithm
+
+License
+    This project is provided as-is for internal experimentation and evaluation.
