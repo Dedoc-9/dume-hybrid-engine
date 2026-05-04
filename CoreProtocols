@@ -84,25 +84,31 @@ public struct CompressionContext: Equatable {
 
 /// Represents a stored vector anchor with versioning.
 public struct Anchor: Codable, Equatable {
-    /// Unique identifier for the anchor.
     public let id: String
-    
-    /// The vector data (potentially compressed/reconstructed).
     public let values: [Float]
     public let indices: [Int]
     public var denseCache: [Float]?
-    
-    /// Version number for conflict resolution.
+
     public let version: Int
-    
-    /// Timestamp of creation/last update.
-    public let timestamp: Double
-    
-    public init(id: String, vector: [Float], version: Int, timestamp: Double) {
+    public let timestamp: TimeInterval
+    public let originalSize: Int
+
+    public init(
+        id: String,
+        values: [Float],
+        indices: [Int],
+        denseCache: [Float]? = nil,
+        version: Int,
+        timestamp: TimeInterval,
+        originalSize: Int
+    ) {
         self.id = id
-        self.vector = vector
+        self.values = values
+        self.indices = indices
+        self.denseCache = denseCache
         self.version = version
         self.timestamp = timestamp
+        self.originalSize = originalSize
     }
 }
 
