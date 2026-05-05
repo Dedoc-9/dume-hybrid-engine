@@ -350,4 +350,128 @@ return try compression.decompress(
         return nearest
     }
 }
-Boilerplate for interface
+Boilerplate for interface:
+
+/// The main entry point for the DUME system.
+/// Orchestrates validation, compression, speculation, and storage.
+public final class DUMEHybridEngine {
+    
+    // MARK: - Subsystems
+    private let storage: DUMEPersistentStorage
+    private let compression: SparseCompression
+    private let index: ApproximateIndex
+    private let burstDetector: BurstDetector
+    private var speculation: SpeculativeEngine?
+    private var manifold: GraphEvolution?
+    private var encryption: DUMEEncryption?
+    
+    // MARK: - State Management
+    private(set) var currentPhase: SystemPhase = .coldStart
+    private(set) var totalIngestions: Int = 0
+    private let phaseLock = NSLock()
+    
+    // MARK: - Constants
+    private enum Thresholds {
+        static let warming = 100
+        static let active = 200
+    }
+
+    public init(
+        storage: DUMEPersistentStorage,
+        compression: SparseCompression,
+        index: ApproximateIndex,
+        encryption: DUMEEncryption? = nil
+    ) {
+        self.storage = storage
+        self.compression = compression
+        self.index = index
+        self.encryption = encryption
+        self.burstDetector = BurstDetector()
+    }
+}
+
+// MARK: - Ingestion Path
+extension DUMEHybridEngine {
+    
+    /// Entry point for the Write Path.
+    /// Follows the 10-step pipeline defined in the specification.
+    public func ingest(id: String, vector: [Float], metadata: [String: Any] = [:]) async throws {
+        // 1. Validation
+        guard !id.isEmpty else { throw DUMEError.invalidIdentifier }
+        guard !vector.isEmpty else { throw DUMEError.emptyVector }
+        
+        // 2. Phase Update
+        updateSystemPhase()
+        
+        // 3. Burst Detection
+        let isBursting = burstDetector.analyze(vector: vector)
+        
+        // 4. Speculation (Active Phase & Non-Burst Only)
+        var processingVector = vector
+        if currentPhase == .active && !isBursting, let engine = speculation {
+            let prediction = engine.predictNext(id: id, input: vector)
+            processingVector = blend(vector, prediction, weight: engine.confidence)
+        }
+        
+        // 5. Compression
+        let anchor = compression.compress(processingVector)
+        
+        // 6. Envelope Construction
+        let envelope = DeterministicEnvelope(
+            anchor: anchor,
+            phase: currentPhase,
+            metadata: metadata
+        )
+        
+        // 7. Encryption (Optional)
+        // 8. Storage
+        try await storage.persist(id: id, envelope: envelope, encryption: encryption)
+        
+        // 9. Manifold Update (Graph Evolution)
+if enableEvolution && !isBurst && phase == .active {
+    graph.update(id: id, vector: finalVector)
+}
+
+// 10. Indexing (MUST BE LAST)
+approximateIndex.insert(id: id, vector: finalVector)
+    }
+}
+
+// MARK: - Retrieval Path
+extension DUMEHybridEngine {
+    
+    /// Entry point for the Read Path.
+    /// Simplified deterministic reconstruction.
+    public func retrieve(id: String) async throws -> [Float] {
+        // 1. Fetch
+        let rawData = try await storage.fetch(id: id)
+        
+        // 2. Decrypt & 3. Decode
+        let envelope = try decode(rawData, encryption: encryption)
+        
+        // 4. Extract & Decompress
+        return envelope.anchor.isDense ? 
+            envelope.anchor.denseValues : 
+            compression.decompress(envelope.anchor)
+    }
+}
+
+// MARK: - Helpers
+private extension DUMEHybridEngine {
+    func updateSystemPhase() {
+        phaseLock.lock()
+        defer { phaseLock.unlock() }
+        
+        totalIngestions += 1
+        if totalIngestions >= Thresholds.active {
+            currentPhase = .active
+        } else if totalIngestions >= Thresholds.warming {
+            currentPhase = .warming
+        }
+    }
+    
+    func blend(_ original: [Float], _ predicted: [Float], weight: Float) -> [Float] {
+        // Linear interpolation between ground truth and speculation
+        return zip(original, predicted).map { ($0 * (1 - weight)) + ($1 * weight) }
+    }
+}
