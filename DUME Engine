@@ -1,51 +1,146 @@
-1. This model represents the core integration layer (DUMEHybridEngine.swift) that orchestrates all the modular components (Compression, Safety, Speculation, Manifold, Storage, Encryption) into a cohesive, production-grade system.
-The Intended Engine Model: DUMEHybridEngine
+// MARK: - DUMEHybridEngine (CORE INTEGRATION LAYER)
 
-This class is the "brain" of the system. It manages the System Phase (Cold Start → Warming → Active), handles Burst Protection, executes Speculative Reconstruction, and drives Manifold Evolution.
-Key Architectural Features
+/*
+ This model represents the core integration layer (DUMEHybridEngine.swift) that orchestrates all modular components
+ (Compression, Safety, Speculation, Manifold Evolution, Storage, and Encryption) into a unified deterministic system.
 
-    State Machine: Transitions from coldStart → warming → active based on ingestion count.
-    Graceful Degradation: All advanced features (Speculation, Manifold, Burst Protection) are optional and can be disabled at runtime.
-    Actor-Based Concurrency: Uses Swift async/await and actors for thread-safe storage and graph updates.
-    Deterministic Core: Ensures same input yields same output, critical for reproducibility.
+ It is the "brain" of the architecture, responsible for maintaining system state, coordinating subsystems, and ensuring
+ reproducible behavior across ingestion and retrieval.
 
-How This Model Works
+ ────────────────────────────────────────────────────────────────────────────────
+ KEY ARCHITECTURAL FEATURES
+ ────────────────────────────────────────────────────────────────────────────────
 
-    Ingest Pipeline:
-        Validation: Checks for empty IDs/vectors.
-        Phase Check: Determines if the system is in coldStart, warming, or active.
-        Burst Detection: If entropy spikes, it disables compression and speculation to ensure 100% fidelity.
-        Speculation: If in active mode and not in burst, it predicts the next state based on velocity and confidence.
-        Compression: Applies adaptive sparse encoding based on entropy/drift.
-        Encryption: Encrypts the compressed data if enabled.
-        Storage: Saves the anchor.
-        Graph Update: If enabled, adds the node to the k-NN graph and prunes old nodes.
+ 1. State Machine
+    - coldStart → warming → active
+    - Progresses based on ingestion count
+    - Controls activation of graph evolution and speculation
 
-    Retrieval Pipeline:
-        Simple lookup in the storage layer. No complex reconstruction logic is needed here because the vector is stored in its final form.
+ 2. Graceful Degradation
+    - All advanced systems are optional:
+        • Speculation Engine
+        • Burst Protection
+        • Manifold Evolution (Graph)
+    - System remains fully functional if any subsystem is disabled
 
-    Lifecycle Management:
-        Cold Start (0-100 ingests): No graph, no speculation. Pure deterministic ingestion.
-        Warming (100-200 ingests): Graph building begins, speculation is experimental.
-        Active (200+ ingests): Full optimization enabled.
+ 3. Actor-Based Concurrency
+    - Storage layer uses Swift actors
+    - Ensures thread-safe persistence and retrieval
+    - Safe concurrent ingestion/retrieval pipeline
 
-Dependencies Required
+ 4. Deterministic Core
+    - Same input always produces same stored envelope
+    - Full reproducibility guaranteed via:
+        • DeterministicEnvelope
+        • Stable compression
+        • Stable indexing
 
-This engine relies on the following modular components (which should be in their respective folders):
+ ────────────────────────────────────────────────────────────────────────────────
+ INGEST PIPELINE (WRITE PATH)
+ ────────────────────────────────────────────────────────────────────────────────
 
-    DUMEMetric (Protocol)
-    DUMEPersistentStorage (Protocol + Actors)
-    DUMEEncryption (Protocol)
-    SparseCompression (Struct)
-    SpeculativeEngine (Struct)
-    GraphEvolution (Struct)
-    BurstDetector (Struct)
-    CompressionContext (Struct)
-    Anchor (Struct)
-    DUMEError (Enum)
-    SystemPhase (Enum)
+ Step 1 — Validation
+    - Reject empty IDs
+    - Reject empty vectors
 
-This model ensures that the system is robust, scalable, and production-ready, meeting all the requirements outlined in the repository specification.
+ Step 2 — Phase Update
+    - Increment ingest counter
+    - Update system phase (coldStart → warming → active)
+
+ Step 3 — Burst Detection
+    - Monitor entropy via BurstDetector
+    - If burst detected:
+        • Disable speculative modification
+        • Force safe deterministic compression
+
+ Step 4 — Speculation (Active Only)
+    - If phase == active AND not burst:
+        • Estimate nearest vector
+        • Compute velocity
+        • Apply SpeculativeEngine prediction
+        • Blend prediction with input using confidence weighting
+
+ Step 5 — Compression
+    - SparseCompression reduces vector dimensionality
+    - Uses entropy + drift adaptive thresholding
+
+ Step 6 — Envelope Construction
+    - Wraps compressed anchor + metadata into DeterministicEnvelope
+    - Captures full system state snapshot
+
+ Step 7 — Encryption (Optional)
+    - Encrypt envelope payload if encryption layer exists
+
+ Step 8 — Storage
+    - Persist encrypted envelope via DUMEPersistentStorage
+    - Storage is authoritative source of truth
+
+ Step 9 — Manifold Update (Graph Evolution)
+    - Only runs in active + non-burst mode
+    - Updates k-NN graph structure
+
+ Step 10 — Indexing (Final Step)
+    - Inserts final vector into ApproximateIndex
+    - Must be last mutation in pipeline
+
+ ────────────────────────────────────────────────────────────────────────────────
+ RETRIEVAL PIPELINE (READ PATH)
+ ────────────────────────────────────────────────────────────────────────────────
+
+ 1. Fetch raw data from storage
+ 2. Decrypt (if encryption enabled)
+ 3. Decode DeterministicEnvelope
+ 4. Extract Anchor
+ 5. Return:
+    - denseCache if available
+    - otherwise decompress(values + indices)
+
+ NOTE:
+    Retrieval is intentionally simple.
+    No speculation, no graph traversal, no reconstruction logic beyond decompression.
+
+ ────────────────────────────────────────────────────────────────────────────────
+ LIFECYCLE MANAGEMENT
+ ────────────────────────────────────────────────────────────────────────────────
+
+ • coldStart (0–100 ingestions)
+    - No graph
+    - No speculation
+    - Pure deterministic ingestion
+
+ • warming (100–200 ingestions)
+    - Graph begins forming
+    - Speculation tested but limited
+
+ • active (200+ ingestions)
+    - Full system enabled:
+        • Speculation
+        • Graph evolution
+        • Burst-aware optimization
+
+ ────────────────────────────────────────────────────────────────────────────────
+ DEPENDENCIES
+ ────────────────────────────────────────────────────────────────────────────────
+
+ Core Protocols:
+    - DUMEMetric
+    - DUMEPersistentStorage
+    - DUMEEncryption
+
+ Core Modules:
+    - SparseCompression
+    - SpeculativeEngine
+    - GraphEvolution
+    - BurstDetector
+    - ApproximateIndex
+
+ Core Types:
+    - CompressionContext
+    - Anchor
+    - DeterministicEnvelope
+    - SystemPhase
+    - DUMEError
+*/
 
 import Foundation
 import CryptoKit
@@ -255,3 +350,4 @@ return try compression.decompress(
         return nearest
     }
 }
+Boilerplate for interface
