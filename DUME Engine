@@ -141,112 +141,111 @@
     - SystemPhase
     - DUMEError
 */
-
 import Foundation
-import CryptoKit
 
-// MARK: - Public Interface
-
-/// The core engine that orchestrates ingestion, retrieval, and state evolution.
-/// It manages the lifecycle of the manifold, speculative reconstruction, and burst protection.
+/// The main entry point for the DUME system.
+/// Orchestrates validation, compression, speculation, and storage.
 public final class DUMEHybridEngine {
     
-    // MARK: - Dependencies
+    // MARK: - Subsystems
     
-    private let metric: DUMEMetric
     private let storage: any DUMEPersistentStorage
-    private let crypto: (any DUMEEncryption)?
     private let compression: SparseCompression
+    private let index: ApproximateIndex
+    private let burstDetector: BurstDetector
     private let speculator: SpeculativeEngine
-    private let clock: SystemClock
+    private let graph: GraphEvolution
+    private let metric: DUMEMetric
+    private let encryption: (any DUMEEncryption)?
     
-    // MARK: - State Management
+    // MARK: - State
     
-    private var phase: SystemPhase = .coldStart
-    private var ingestCount: Int = 0
-    private let warmupTarget: Int = 100
+    private(set) var currentPhase: SystemPhase = .coldStart
+    private(set) var totalIngestions: Int = 0
+    private let phaseLock = NSLock()
     
-    private var graph: GraphEvolution
-    private var burstDetector: BurstDetector
-    private var approximateIndex = ApproximateIndex()
-    private let compressionThreshold: Float
+    // MARK: - Config
     
-    // MARK: - Configuration Flags
-
-private let enableEvolution: Bool
-private let enableSpeculation: Bool
-private let enableBurstProtection: Bool
-private let compressionThreshold: Float
- )   
-    // MARK: - Initialization
+    private let enableEvolution: Bool
+    private let enableSpeculation: Bool
+    private let enableBurstProtection: Bool
+    
+    // MARK: - Constants
+    
+    private enum Thresholds {
+        static let warming = 100
+        static let active = 200
+    }
+    
+    // MARK: - Init
     
     public init(
-    metric: DUMEMetric,
-    storage: any DUMEPersistentStorage,
-    crypto: (any DUMEEncryption)? = nil,
-    compression: SparseCompression = SparseCompression(),
-    speculator: SpeculativeEngine = SpeculativeEngine(),
-    enableEvolution: Bool = true,
-    enableSpeculation: Bool = true,
-    enableBurstProtection: Bool = true,
-    compressionThreshold: Float = 0.02,
-    clock: SystemClock = RealClock()
-) {
-        self.metric = metric
+        storage: any DUMEPersistentStorage,
+        compression: SparseCompression,
+        index: ApproximateIndex,
+        metric: DUMEMetric,
+        encryption: (any DUMEEncryption)? = nil,
+        speculator: SpeculativeEngine = SpeculativeEngine(),
+        enableEvolution: Bool = true,
+        enableSpeculation: Bool = true,
+        enableBurstProtection: Bool = true
+    ) {
         self.storage = storage
-        self.crypto = crypto
         self.compression = compression
+        self.index = index
+        self.metric = metric
+        self.encryption = encryption
         self.speculator = speculator
-        self.clock = clock
         self.enableEvolution = enableEvolution
         self.enableSpeculation = enableSpeculation
         self.enableBurstProtection = enableBurstProtection
-        self.compressionThreshold = compressionThreshold
         
-        // Initialize subsystems
-        self.graph = GraphEvolution(metric: metric, k: 3)
         self.burstDetector = BurstDetector()
+        self.graph = GraphEvolution(metric: metric, k: 3)
     }
+}
+
+// MARK: - Ingestion Path
+
+extension DUMEHybridEngine {
     
-    // MARK: - Public API
-    
-    /// Ingests a vector into the system.
-    /// - Parameters:
-    ///   - id: Unique identifier for the anchor.
-    ///   - vector: The high-dimensional vector to ingest.
-    ///   - ctx: Context containing entropy and drift metrics.
-    /// - Throws: DUMEError if validation fails or storage fails.
+    /// Entry point for the Write Path.
     public func ingest(id: String, vector: [Float], ctx: CompressionContext) async throws {
-        // 1. Input Validation
+        
+        // 1. Validation
         guard !id.isEmpty else {
-            throw DUMEError.invalidVector("Cannot ingest anchor with empty ID")
+            throw DUMEError.invalidVector("Empty ID")
         }
         guard !vector.isEmpty else {
-            throw DUMEError.invalidVector("Cannot ingest empty vector")
+            throw DUMEError.invalidVector("Empty vector")
         }
         
-        // 2. Phase Management (Warmup Logic)
-        ingestCount += 1
-        updatePhase()
+        // 2. Phase Update
+        updateSystemPhase()
         
-        // 3. Burst Detection & Protection
+        // 3. Burst Detection
         if enableBurstProtection {
             burstDetector.update(entropy: ctx.entropy)
         }
         let isBurst = burstDetector.isBurstMode
         
-        // 4. Speculative Reconstruction (Only if active and not in burst)
+        // 4. Speculation
         var finalVector = vector
-        if enableSpeculation && !isBurst && phase == .active {
-            if let nearest = findNearestVector(vector) {
+        
+        if enableSpeculation && currentPhase == .active && !isBurst {
+            if let nearest = findNearest(vector) {
                 let velocity = zip(vector, nearest).map { $0 - $1 }
                 let result = speculator.speculate(current: nearest, velocity: velocity)
+                
                 if result.isValid {
-    finalVector = zip(vector, result.predicted).map {
-        let alpha = min(0.9, result.confidence)
-        return $0 * (1 - alpha) + $1 * alpha
-    }
-} 
+                    let alpha = min(0.9, result.confidence)
+                    finalVector = zip(vector, result.predicted).map {
+                        ($0 * (1 - alpha)) + ($1 * alpha)
+                    }
+                }
+            }
+        }
+        
         // 5. Compression
         let (values, indices) = try compression.compress(
             finalVector,
@@ -255,214 +254,92 @@ private let compressionThreshold: Float
             isBurstMode: isBurst
         )
         
-        // 6. Encryption (Optional)
-        let raw = Data(bytes: values, count: values.count * MemoryLayout<Float>.size)
-        let securedData = try crypto?.encrypt(raw) ?? rawData
-
-// NOTE: no immediate reconstruction here
-let restored = values
-        
-        // 7. Reconstruction (Decompression)
-        let restored = values
-
-        // 8. Storage
-let anchor = Anchor(
-    id: id,
-    values: values,
-    indices: indices,
-    denseCache: nil,
-    version: ingestCount,
-    timestamp: clock.now(),
-    originalSize: vector.count
-)
-
-try await storage.put(anchor)
-        
-        // 9. Manifold Evolution (Graph Update)
-        if enableEvolution && !isBurst && phase == .active {
-            try graph.addNode(id: id, vector: finalVector)
-            graph.pruneOldNodes()
-        }
-
-// 10. Indexing (must be last)
-approximateIndex.insert(finalVector)
-    
-    /// Retrieves a vector by ID.
-    /// - Parameter id: The unique identifier.
-    /// - Returns: The reconstructed vector, or nil if not found.
-    public func retrieve(id: String) async throws -> [Float]? {
-        guard let anchor = try await storage.get(id) else { return nil }
-
-if let cached = anchor.denseCache {
-    return cached
-}
-
-return try compression.decompress(
-    values: anchor.values,
-    indices: anchor.indices,
-    originalSize: anchor.originalSize
-)
-    }
-    
-    /// Creates a checkpoint of the current state.
-    public func checkpoint() async throws {
-        try await storage.checkpoint()
-    }
-    
-    /// Restores state from a checkpoint.
-    public func restore() async throws {
-        try await storage.restore()
-    }
-    
-    /// Returns the current system phase.
-    public var currentPhase: SystemPhase {
-        return phase
-    }
-    
-    // MARK: - Private Helpers
-    
-    private func updatePhase() {
-        if phase == .coldStart && ingestCount >= warmupTarget {
-            phase = .warming
-        } else if phase == .warming && ingestCount >= warmupTarget * 2 {
-            phase = .active
-        }
-    }
-    
-    private func findNearestVector(_ vector: [Float]) -> [Float]? {
-        guard enableEvolution else { return nil }
-        
-        let allNodes = graph.getAllNodes()
-        guard !allNodes.isEmpty else { return nil }
-        
-        var nearest: [Float]?
-        var minDistance = Float.infinity
-        
-        if let approx = approximateIndex.nearest(to: vector, metric: metric) {
-    return approx
-}
-            if distance < minDistance {
-                minDistance = distance
-                nearest = node.vector
-            }
-        }
-        
-        return nearest
-    }
-}
-Boilerplate for interface:
-
-/// The main entry point for the DUME system.
-/// Orchestrates validation, compression, speculation, and storage.
-public final class DUMEHybridEngine {
-    
-    // MARK: - Subsystems
-    private let storage: DUMEPersistentStorage
-    private let compression: SparseCompression
-    private let index: ApproximateIndex
-    private let burstDetector: BurstDetector
-    private var speculation: SpeculativeEngine?
-    private var manifold: GraphEvolution?
-    private var encryption: DUMEEncryption?
-    
-    // MARK: - State Management
-    private(set) var currentPhase: SystemPhase = .coldStart
-    private(set) var totalIngestions: Int = 0
-    private let phaseLock = NSLock()
-    
-    // MARK: - Constants
-    private enum Thresholds {
-        static let warming = 100
-        static let active = 200
-    }
-
-    public init(
-        storage: DUMEPersistentStorage,
-        compression: SparseCompression,
-        index: ApproximateIndex,
-        encryption: DUMEEncryption? = nil
-    ) {
-        self.storage = storage
-        self.compression = compression
-        self.index = index
-        self.encryption = encryption
-        self.burstDetector = BurstDetector()
-    }
-}
-
-// MARK: - Ingestion Path
-extension DUMEHybridEngine {
-    
-    /// Entry point for the Write Path.
-    /// Follows the 10-step pipeline defined in the specification.
-    public func ingest(id: String, vector: [Float], metadata: [String: Any] = [:]) async throws {
-        // 1. Validation
-        guard !id.isEmpty else { throw DUMEError.invalidIdentifier }
-        guard !vector.isEmpty else { throw DUMEError.emptyVector }
-        
-        // 2. Phase Update
-        updateSystemPhase()
-        
-        // 3. Burst Detection
-        let isBursting = burstDetector.analyze(vector: vector)
-        
-        // 4. Speculation (Active Phase & Non-Burst Only)
-        var processingVector = vector
-        if currentPhase == .active && !isBursting, let engine = speculation {
-            let prediction = engine.predictNext(id: id, input: vector)
-            processingVector = blend(vector, prediction, weight: engine.confidence)
-        }
-        
-        // 5. Compression
-        let anchor = compression.compress(processingVector)
-        
-        // 6. Envelope Construction
-        let envelope = DeterministicEnvelope(
-            anchor: anchor,
-            phase: currentPhase,
-            metadata: metadata
+        let anchor = Anchor(
+            id: id,
+            values: values,
+            indices: indices,
+            denseCache: nil,
+            version: totalIngestions,
+            timestamp: Date().timeIntervalSince1970,
+            originalSize: vector.count
         )
         
-        // 7. Encryption (Optional)
-        // 8. Storage
-        try await storage.persist(id: id, envelope: envelope, encryption: encryption)
+        // 6. Envelope
+        let envelope = DeterministicEnvelope(
+            anchor: anchor,
+            entropy: ctx.entropy,
+            drift: ctx.drift,
+            isBurst: isBurst,
+            phase: currentPhase,
+            speculationApplied: enableSpeculation && !isBurst && currentPhase == .active,
+            speculationConfidence: nil,
+            ingestIndex: totalIngestions,
+            timestamp: Date().timeIntervalSince1970,
+            checksum: "\(id)-\(totalIngestions)"
+        )
         
-        // 9. Manifold Update (Graph Evolution)
-if enableEvolution && !isBurst && phase == .active {
-    graph.update(id: id, vector: finalVector)
-}
-
-// 10. Indexing (MUST BE LAST)
-approximateIndex.insert(id: id, vector: finalVector)
+        // 7. Encode + Encrypt
+        let encoded = try JSONEncoder().encode(envelope)
+        let secured = try encryption?.encrypt(encoded) ?? encoded
+        
+        // 8. Storage (Actor call)
+        try await storage.putRaw(id, data: secured)
+        
+        // 9. Graph Evolution
+        if enableEvolution && currentPhase == .active && !isBurst {
+            graph.update(id: id, vector: finalVector)
+        }
+        
+        // 10. Indexing (MUST BE LAST)
+        index.insert(finalVector)
     }
 }
 
 // MARK: - Retrieval Path
+
 extension DUMEHybridEngine {
     
-    /// Entry point for the Read Path.
-    /// Simplified deterministic reconstruction.
-    public func retrieve(id: String) async throws -> [Float] {
+    public func retrieve(id: String) async throws -> [Float]? {
+        
         // 1. Fetch
-        let rawData = try await storage.fetch(id: id)
+        guard let raw = try await storage.getRaw(id) else {
+            return nil
+        }
         
-        // 2. Decrypt & 3. Decode
-        let envelope = try decode(rawData, encryption: encryption)
+        // 2. Decrypt
+        let decrypted = try encryption?.decrypt(raw) ?? raw
         
-        // 4. Extract & Decompress
-        return envelope.anchor.isDense ? 
-            envelope.anchor.denseValues : 
-            compression.decompress(envelope.anchor)
+        // 3. Decode
+        let envelope = try JSONDecoder().decode(
+            DeterministicEnvelope.self,
+            from: decrypted
+        )
+        
+        let anchor = envelope.anchor
+        
+        // 4. Return cached or decompress
+        if let cached = anchor.denseCache {
+            return cached
+        }
+        
+        return try compression.decompress(
+            values: anchor.values,
+            indices: anchor.indices,
+            originalSize: anchor.originalSize
+        )
     }
 }
 
 // MARK: - Helpers
+
 private extension DUMEHybridEngine {
+    
     func updateSystemPhase() {
         phaseLock.lock()
         defer { phaseLock.unlock() }
         
         totalIngestions += 1
+        
         if totalIngestions >= Thresholds.active {
             currentPhase = .active
         } else if totalIngestions >= Thresholds.warming {
@@ -470,8 +347,28 @@ private extension DUMEHybridEngine {
         }
     }
     
-    func blend(_ original: [Float], _ predicted: [Float], weight: Float) -> [Float] {
-        // Linear interpolation between ground truth and speculation
-        return zip(original, predicted).map { ($0 * (1 - weight)) + ($1 * weight) }
+    func findNearest(_ vector: [Float]) -> [Float]? {
+        
+        // Fast path: index
+        if let approx = index.nearest(to: vector, metric: metric) {
+            return approx
+        }
+        
+        // Fallback: graph
+        let nodes = graph.getAllNodes()
+        guard !nodes.isEmpty else { return nil }
+        
+        var best: [Float]?
+        var minDistance = Float.infinity
+        
+        for node in nodes {
+            let d = metric.distance(vector, node.vector)
+            if d < minDistance {
+                minDistance = d
+                best = node.vector
+            }
+        }
+        
+        return best
     }
 }
