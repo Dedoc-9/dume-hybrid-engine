@@ -7,48 +7,59 @@ File 1: Sources/Storage/FileStorage.swift
 import Foundation
 
 /// Persistent storage implementation using JSON files.
+/// Stores encrypted serialized envelopes as opaque Data.
 /// Supports checkpointing and restoring state to survive process restarts.
 public actor FileStorage: DUMEPersistentStorage {
-    private var anchors: [String: Anchor] = [:]
+    
+    // MARK: - Internal Storage (opaque encrypted payloads)
+    
+    private var storage: [String: Data] = [:]
+    
     private let fileURL: URL
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
     
-    /// Initializes storage with a file path.
-    /// - Parameter fileURL: The path to the JSON file for persistence.
+    // MARK: - Init
+    
     public init(fileURL: URL) {
         self.fileURL = fileURL
     }
     
-    /// Stores an anchor.
-    public func put(_ anchor: Anchor) async throws {
-        guard !anchor.id.isEmpty else {
-            throw DUMEError.storageError("Cannot store anchor with empty ID")
+    // MARK: - Write
+    
+    /// Stores encrypted serialized data under an ID.
+    public func putData(id: String, data: Data) async throws {
+        guard !id.isEmpty else {
+            throw DUMEError.storageError("Cannot store data with empty ID")
         }
-        anchors[anchor.id] = anchor
+        storage[id] = data
     }
     
-    /// Retrieves an anchor by ID.
-    public func get(_ id: String) async throws -> Anchor? {
-        return anchors[id]
+    // MARK: - Read
+    
+    /// Retrieves encrypted serialized data.
+    public func getData(_ id: String) async throws -> Data? {
+        return storage[id]
     }
     
-    /// Retrieves all stored anchors.
-    public func getAllAnchors() async throws -> [Anchor] {
-        return Array(anchors.values)
+    /// Retrieves all stored raw payloads.
+    public func getAllData() async throws -> [Data] {
+        return Array(storage.values)
     }
     
-    /// Saves the current state to disk.
+    // MARK: - Checkpointing
+    
+    /// Saves full encrypted storage map to disk.
     public func checkpoint() async throws {
         do {
-            let data = try encoder.encode(Array(anchors.values))
+            let data = try encoder.encode(storage)
             try data.write(to: fileURL)
         } catch {
             throw DUMEError.storageError("Checkpoint failed: \(error.localizedDescription)")
         }
     }
     
-    /// Loads state from disk.
+    /// Restores encrypted storage map from disk.
     public func restore() async throws {
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
             return
@@ -56,48 +67,54 @@ public actor FileStorage: DUMEPersistentStorage {
         
         do {
             let data = try Data(contentsOf: fileURL)
-            let loaded = try decoder.decode([Anchor].self, from: data)
-            anchors.removeAll()
-            for anchor in loaded {
-                anchors[anchor.id] = anchor
-            }
+            let loaded = try decoder.decode([String: Data].self, from: data)
+            storage = loaded
         } catch {
             throw DUMEError.storageError("Restore failed: \(error.localizedDescription)")
         }
     }
 }
-
 File 2: Sources/Storage/InMemoryStorage.swift
 
 import Foundation
 
-/// Ephemeral storage implementation for testing and high-speed scenarios.
+/// Ephemeral storage implementation for testing and high-throughput scenarios.
+/// Stores encrypted serialized envelopes as opaque Data in memory.
 /// Data is lost when the process exits.
 public actor InMemoryStorage: DUMEPersistentStorage {
-    private var data: [String: Anchor] = [:]
+    
+    // MARK: - Internal Storage
+    
+    private var storage: [String: Data] = [:]
     
     public init() {}
     
-    public func put(_ anchor: Anchor) async throws {
-        guard !anchor.id.isEmpty else {
-            throw DUMEError.storageError("Cannot store anchor with empty ID")
+    // MARK: - Write
+    
+    public func putData(id: String, data: Data) async throws {
+        guard !id.isEmpty else {
+            throw DUMEError.storageError("Cannot store data with empty ID")
         }
-        data[anchor.id] = anchor
+        storage[id] = data
     }
     
-    public func get(_ id: String) async throws -> Anchor? {
-        return data[id]
+    // MARK: - Read
+    
+    public func getData(_ id: String) async throws -> Data? {
+        return storage[id]
     }
     
-    public func getAllAnchors() async throws -> [Anchor] {
-        return Array(data.values)
+    public func getAllData() async throws -> [Data] {
+        return Array(storage.values)
     }
+    
+    // MARK: - Lifecycle
     
     public func checkpoint() async throws {
-        // In-memory storage does not persist to disk
+        // No-op (in-memory only)
     }
     
     public func restore() async throws {
-        // Nothing to restore for in-memory storage
+        // No-op (in-memory only)
     }
 }
